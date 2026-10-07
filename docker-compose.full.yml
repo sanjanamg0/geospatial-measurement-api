@@ -1,0 +1,48 @@
+# Production-style stack: PostgreSQL + PostGIS, Redis, the API, and a Celery worker.
+#   docker compose -f docker-compose.full.yml up --build
+# API on http://localhost:8000 (Swagger UI at /api/docs/). Authentication is switched on.
+x-app: &app
+  build: .
+  environment: &env
+    GEO_DATABASE_URL: postgres://postgres:postgres@db:5432/geo
+    GEO_ASYNC: celery
+    GEO_CELERY_BROKER_URL: redis://redis:6379/0
+    GEO_REQUIRE_AUTH: "1"
+    DJANGO_SECRET_KEY: change-me-in-production
+  volumes:
+    - uploads:/data  # API and worker must share the uploaded files
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_started
+
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: geo
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d geo"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+
+  api:
+    <<: *app
+    ports:
+      - "8000:8000"
+
+  worker:
+    <<: *app
+    command: celery -A geoproject worker -l info
+
+volumes:
+  pgdata:
+  uploads:

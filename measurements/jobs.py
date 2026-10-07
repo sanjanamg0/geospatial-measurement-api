@@ -1,8 +1,10 @@
-"""Optional background processing (GEO_ASYNC=1).
+"""Optional background processing.
 
-A small in-process thread pool: no broker to run, which keeps the project easy to start.
-Limitation: queued jobs are lost if the server restarts, and it does not scale beyond one
-process. For that, replace ``submit`` with a Celery/RQ task that calls ``run``.
+``GEO_ASYNC=1`` (thread): a small in-process pool. No broker to run, so it is easy to start,
+but queued jobs are lost if the server restarts and it does not scale beyond one process.
+``GEO_ASYNC=celery``: the job is sent to a Celery worker through the broker
+(``GEO_CELERY_BROKER_URL``); durable and horizontally scalable.
+Both backends call ``run`` so the processing logic exists once.
 """
 import logging
 from concurrent.futures import ThreadPoolExecutor
@@ -43,4 +45,9 @@ def _thread_target(record_id, path: Path) -> None:
 
 
 def submit(record_id, path: Path) -> None:
-    _executor().submit(_thread_target, record_id, path)
+    if settings.ASYNC_BACKEND == "celery":
+        from .tasks import process_uploaded_file
+
+        process_uploaded_file.delay(str(record_id), str(path))
+    else:
+        _executor().submit(_thread_target, record_id, path)

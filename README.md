@@ -16,7 +16,10 @@ python manage.py migrate
 python manage.py runserver
 ```
 
-Docker alternative: `docker compose up --build` (serves on http://localhost:8000).
+Docker alternatives:
+
+- `docker compose up --build`: the API only (SQLite), on http://localhost:8000.
+- `docker compose -f docker-compose.full.yml up --build`: the production-style stack (PostgreSQL + PostGIS, Redis, API, Celery worker, authentication on). See [Production stack](#production-stack).
 
 Tests and lint:
 
@@ -25,7 +28,20 @@ pytest
 ruff check .
 ```
 
-Configuration (environment variables): `GEO_DATA_DIR` (DB and uploads, default `./data`), `GEO_MAX_UPLOAD_MB` (default 50), `GEO_ASYNC` (set to `1` for background processing), `GEO_ASYNC_WORKERS` (default 2), `DJANGO_SECRET_KEY`, `DJANGO_DEBUG`.
+`requirements-dev.txt` also installs the optional packages (`requirements-optional.txt`: Celery and the PostgreSQL driver). The base `requirements.txt` is enough to run the API with SQLite.
+
+Configuration (environment variables):
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `GEO_DATA_DIR` | `./data` | SQLite DB and uploaded files |
+| `GEO_MAX_UPLOAD_MB` | 50 | Upload size limit |
+| `GEO_DATABASE_URL` | (SQLite) | `postgres://user:pass@host:5432/db` to use PostgreSQL (PostGIS is used when available) |
+| `GEO_ASYNC` | off | `1`/`thread`: in-process worker; `celery`: Celery worker through a broker |
+| `GEO_ASYNC_WORKERS` | 2 | Thread pool size for `GEO_ASYNC=1` |
+| `GEO_CELERY_BROKER_URL` | `redis://localhost:6379/0` | Celery broker |
+| `GEO_REQUIRE_AUTH` | off | `1`: token authentication required, users see only their own files |
+| `DJANGO_SECRET_KEY`, `DJANGO_DEBUG`, `DJANGO_ALLOWED_HOSTS` | dev defaults | Django settings |
 
 **Interactive API docs (Swagger UI):** http://localhost:8000/api/docs/ (OpenAPI schema at `/api/schema/`).
 
@@ -111,6 +127,25 @@ Downloads every feature with its measurement. GeoJSON (default) keeps the source
 curl -OJ "http://localhost:8000/api/files/<id>/export/?as=csv"
 ```
 
+### `GET /api/files/`
+Lists files (paginated with `limit`/`offset`). With authentication enabled, only your own.
+
+### Filtering by area: `?bbox=minx,miny,maxx,maxy`
+Both `/measurements/` and `/export/` accept `bbox` (in the file's own CRS) and return only the features intersecting it; `count` and `summary` then describe the filtered set. `400` for malformed or inverted boxes. On SQLite and plain PostgreSQL this compares each feature's stored bounding box (indexed). On PostgreSQL with PostGIS it uses `ST_Intersects` against a GiST-indexed geometry column, so it tests the real shape: a box that only overlaps the empty corner of an L-shaped polygon matches without PostGIS and does not match with it.
+
+## Authentication
+
+Off by default so you can try the API with plain `curl`. Set `GEO_REQUIRE_AUTH=1` to require a token on every file endpoint; each user then only sees, lists, exports and deletes their own files (anyone else's id returns `404`).
+
+```bash
+curl -X POST localhost:8000/api/auth/register/ -d username=demo -d password='correct-horse-battery'
+# {"username": "demo", "token": "..."}
+curl -X POST localhost:8000/api/auth/token/ -d username=demo -d password='correct-horse-battery'   # log in again
+curl -H "Authorization: Token <token>" -F file=@samples/survey_sample.kml localhost:8000/api/files/
+```
+
+Passwords go through Django's validators (minimum 8 characters, not a common password). Tokens do not expire; there is no rate limiting yet (see future scope).
+
 ## Measurement methods
 
 | `method` | How | Use when |
@@ -122,7 +157,34 @@ On the sample polygon in `samples/qgis_check.kml` the two methods differ by abou
 
 ## Background processing
 
-Set `GEO_ASYNC=1` to return `202` immediately and process in an in-process worker pool (`GEO_ASYNC_WORKERS`, default 2). It needs no broker, which keeps setup trivial. Limitation: queued jobs are lost if the server restarts and it does not scale past one process; for that, replace `measurements/jobs.py::submit` with a Celery/RQ task that calls `jobs.run`.
+Uploads can be processed in the background: the API returns `202` with `status: "PENDING"` and the client polls `GET /api/files/{id}/`. Two backends share the same processing function (`measurements/jobs.py::run`):
+
+| `GEO_ASYNC` | Backend | Trade-off |
+| --- | --- | --- |
+| `1` / `thread` | In-process thread pool (`GEO_ASYNC_WORKERS`) | No extra services; jobs are lost if the server restarts; single process only |
+| `celery` | Celery worker via a broker (Redis by default) | Durable, scales with more workers; needs Redis and a worker process |
+
+```bash
+pip install -r requirements-optional.txt
+export GEO_ASYNC=celery GEO_CELERY_BROKER_URL=redis://localhost:6379/0
+celery -A geoproject worker -l info          # terminal 1
+python manage.py runserver                   # terminal 2
+bash scripts/smoke_async.sh http://localhost:8000   # upload, poll, check results
+```
+
+The API and the worker must see the same upload directory (`GEO_DATA_DIR`) and the same database; use PostgreSQL when they run on different machines or containers.
+
+## PostgreSQL and PostGIS
+
+Set `GEO_DATABASE_URL=postgres://user:pass@host:5432/db` to use PostgreSQL instead of SQLite. Migration `0004` then tries to enable the PostGIS extension and adds a `geom` geometry column with a GiST index; if PostGIS is not available it logs a warning and the API still works with bounding-box filtering. GeoDjango is deliberately not used, so installing the project still needs no system GDAL (the PostGIS column is filled and queried with a few lines of SQL in `measurements/spatial.py`). Geometries are stored 2D in the file's own SRID (KML altitudes are dropped).
+
+## Production stack
+
+```bash
+docker compose -f docker-compose.full.yml up --build
+```
+
+Starts PostGIS, Redis, the API (gunicorn) and a Celery worker with authentication on. Swagger UI is at http://localhost:8000/api/docs/. Change `DJANGO_SECRET_KEY` and the database password in the compose file before any real deployment.
 
 ## Maintenance
 
@@ -139,7 +201,9 @@ measurements/
   models.py            UploadedFile, Feature
   serializers.py       upload validation, response shapes
   views.py             FileViewSet (create, retrieve, delete, measurements, export)
-  jobs.py              optional background worker (GEO_ASYNC=1)
+  jobs.py / tasks.py   optional background processing (thread pool or Celery task)
+  auth_views.py        register / token endpoints; permissions.py: optional auth switch
+  spatial.py           bbox filtering, PostGIS geometry column (raw SQL, no GeoDjango)
   management/commands/ cleanup_uploads retention command
   services/
     reader.py          zip/KML -> GeoDataFrame (framework independent)
@@ -209,8 +273,10 @@ The two methods differ from each other by about 0.12% (area) and 0.06% (length) 
 - Structured logging with feature count and execution duration.
 - GitHub Actions CI workflow running tests and linter on Python 3.12.
 - Swagger UI / OpenAPI schema, geodesic measurement mode, GeoJSON and CSV export, whole-file summary, delete endpoint and retention command.
-- Optional background processing (`GEO_ASYNC=1`) with `202` + polling.
-- 56 automated unit and integration tests passing.
+- Optional background processing with `202` + polling: in-process threads or a Celery worker.
+- Optional token authentication with per-user file isolation.
+- Optional PostgreSQL/PostGIS with `?bbox=` spatial filtering (GiST index, `ST_Intersects`).
+- 79 automated tests on PostGIS (76 on SQLite plus 4 PostGIS-only tests that are skipped there). CI runs the suite on SQLite and on PostGIS, plus an end-to-end job with a real Celery worker and Redis.
 
 ## Learnings
 
@@ -223,6 +289,7 @@ The two methods differ from each other by about 0.12% (area) and 0.06% (length) 
 
 ## Known Limitations and Future Scope
 
-- Celery/Redis task queue and progress reporting for very large files (the in-process worker is single-process and non-durable).
-- User authentication and per-tenant upload isolation.
-- PostgreSQL/PostGIS integration for spatial indexing and bounding-box queries.
+- Progress reporting for very large files, and streaming/chunked reading.
+- Token expiry and rotation, rate limiting on the auth endpoints, per-user quotas; OAuth/SSO if this becomes multi-tenant.
+- Reprojecting `bbox` queries from WGS84 so clients need not know each file's CRS.
+- Spatial analysis on the stored geometries (area within a polygon, nearest feature) now that PostGIS holds them.

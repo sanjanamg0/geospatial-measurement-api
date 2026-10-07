@@ -8,6 +8,7 @@ import geopandas as gpd
 from django.db import transaction
 from shapely.geometry import mapping
 
+from measurements import spatial
 from measurements.models import Feature, UploadedFile
 from measurements.services.errors import ProcessingError
 from measurements.services.measure import measure_geometry
@@ -31,12 +32,14 @@ def _build_features(gdf: gpd.GeoDataFrame, file_id, method: str) -> list[Feature
     features = []
     for i, geom in enumerate(gdf.geometry):
         m = measure_geometry(geom, crs, method)
+        has_geometry = geom is not None and not geom.is_empty
+        minx, miny, maxx, maxy = geom.bounds if has_geometry else (None,) * 4
         features.append(
             Feature(
                 file_id=file_id,
                 index=i,
                 geometry_type=None if geom is None else geom.geom_type,
-                geometry=None if geom is None or geom.is_empty else mapping(geom),
+                geometry=mapping(geom) if has_geometry else None,
                 crs=label,
                 properties=props[i],
                 measurement_type=m.type,
@@ -44,6 +47,10 @@ def _build_features(gdf: gpd.GeoDataFrame, file_id, method: str) -> list[Feature
                 unit=m.unit,
                 measured_in_crs=m.measured_in_crs,
                 note=m.note,
+                minx=minx,
+                miny=miny,
+                maxx=maxx,
+                maxy=maxy,
             )
         )
     return features
@@ -56,9 +63,10 @@ def process_file(record: UploadedFile, path: Path) -> UploadedFile:
     try:
         gdf = read_geofile(path, record.file_type)
         features = _build_features(gdf, record.id, record.method)
+        record.crs = _crs_label(gdf.crs)
         with transaction.atomic():
             Feature.objects.bulk_create(features, batch_size=500)
-        record.crs = _crs_label(gdf.crs)
+            spatial.store_geometries(record.id, spatial.srid_from_label(record.crs))
         record.feature_count = len(features)
         record.status = Status.COMPLETED
     except ProcessingError as exc:

@@ -5,8 +5,8 @@ WORKDIR /srv
 
 # pyogrio / pyproj / shapely ship manylinux wheels that bundle GDAL, GEOS and PROJ,
 # so no system geospatial packages are needed.
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt gunicorn
+COPY requirements.txt requirements-optional.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-optional.txt gunicorn
 
 COPY manage.py .
 COPY geoproject ./geoproject

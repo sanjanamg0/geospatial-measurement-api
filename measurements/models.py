@@ -16,6 +16,13 @@ class UploadedFile(models.Model):
         GEODESIC = "geodesic"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="geo_files",
+    )
     filename = models.CharField(max_length=255)
     file_type = models.CharField(max_length=16)  # "shapefile" | "kml"
     method = models.CharField(max_length=16, choices=Method.choices, default=Method.PROJECTED)
@@ -48,8 +55,17 @@ class Feature(models.Model):
     measured_in_crs = models.CharField(max_length=64, null=True, blank=True)
     note = models.TextField(null=True, blank=True)
 
+    # Bounding box of the geometry in the source CRS (used by ?bbox= filtering)
+    minx = models.FloatField(null=True, blank=True)
+    miny = models.FloatField(null=True, blank=True)
+    maxx = models.FloatField(null=True, blank=True)
+    maxy = models.FloatField(null=True, blank=True)
+
     class Meta:
         ordering = ["index"]
         constraints = [
             models.UniqueConstraint(fields=["file", "index"], name="unique_feature_index_per_file")
+        ]
+        indexes = [
+            models.Index(fields=["file", "minx", "maxx", "miny", "maxy"], name="feature_bbox_idx")
         ]
