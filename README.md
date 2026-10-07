@@ -184,6 +184,19 @@ Results are cross-checked in the test suite against an independent ellipsoidal c
 
 All test cases assert agreement within 0.5%.
 
+### Independent check against QGIS
+
+`samples/qgis_check.kml` (an irregular polygon and a polyline near Bangalore) was measured in QGIS (project ellipsoid WGS 84; field calculator `$area`, `$length`, and `area()`/`length()` of the geometry transformed to EPSG:32643) and compared with this API:
+
+| Quantity | API | QGIS | Difference |
+| --- | --- | --- | --- |
+| Area, geodesic (`method=geodesic`) | 273068.8226675242 m² | 273068.8226675242 m² | 0 |
+| Area, UTM 43N (`method=projected`) | 273385.02470 m² | 273385 m² (field rounded to whole m²) | +0.02 m² (0.00001%) |
+| Length, geodesic | 1285.9520287970836 m | 1285.9520287970836 m | 0 |
+| Length, UTM 43N | 1286.698838265507 m | 1286.698838265507 m | 0 |
+
+The two methods differ from each other by about 0.12% (area) and 0.06% (length) on this sample, which is the expected UTM scale distortion 2.6 degrees from the zone's central meridian.
+
 ## Hardening Implemented
 
 - Geodesic cross-check tests across 5 global locations.
