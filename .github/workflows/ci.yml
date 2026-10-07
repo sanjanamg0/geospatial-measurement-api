@@ -67,7 +67,7 @@ jobs:
       GEO_DATABASE_URL: postgres://postgres:postgres@localhost:5432/geo
       GEO_CELERY_BROKER_URL: redis://localhost:6379/0
       GEO_ASYNC: celery
-      GEO_DATA_DIR: ${{ runner.temp }}/geo-data
+      GEO_DATA_DIR: /tmp/geo-data
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
