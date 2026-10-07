@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>QGIS cross-check</name>
+    <Placemark>
+      <name>check_polygon</name>
+      <description>Irregular polygon in Bangalore used to compare API area against QGIS</description>
+      <Polygon>
+        <outerBoundaryIs>
+          <LinearRing>
+            <coordinates>
+              77.5900,12.9700,0 77.5950,12.9700,0 77.5960,12.9735,0 77.5925,12.9745,0 77.5895,12.9730,0 77.5900,12.9700,0
+            </coordinates>
+          </LinearRing>
+        </outerBoundaryIs>
+      </Polygon>
+    </Placemark>
+    <Placemark>
+      <name>check_line</name>
+      <description>Polyline used to compare API length against QGIS</description>
+      <LineString>
+        <coordinates>
+          77.5900,12.9700,0 77.5950,12.9720,0 77.6000,12.9760,0
+        </coordinates>
+      </LineString>
+    </Placemark>
+  </Document>
+</kml>

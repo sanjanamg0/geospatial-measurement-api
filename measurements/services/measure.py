@@ -1,29 +1,40 @@
 """CRS selection and measurement calculation.
 
-Strategy
---------
-* Geographic CRS (degrees, e.g. EPSG:4326): reproject each feature to a metric CRS
-  chosen from its own centroid, then measure in metres:
-    - between 80 S and 84 N  -> the UTM zone of the centroid
-    - outside that band      -> a Lambert azimuthal equal-area CRS centred on the pole
-  Features crossing the antimeridian are first shifted onto a continuous 0..360 range.
-* Projected CRS: measure in the source CRS and report its linear unit.
-* Invalid geometries (e.g. self-intersecting polygons) are repaired with make_valid
-  before measuring, and the repair is reported in the note.
+Two methods are supported:
+
+``projected`` (default)
+    * Geographic CRS (degrees, e.g. EPSG:4326): reproject each feature to a metric CRS chosen
+      from its own centroid, then measure in metres:
+        - between 80 S and 84 N  -> the UTM zone of the centroid
+        - outside that band      -> a Lambert azimuthal equal-area CRS centred on the pole
+      Features crossing the antimeridian are first shifted onto a continuous 0..360 range.
+    * Projected CRS: measure in the source CRS and report its linear unit.
+
+``geodesic``
+    Measure directly on the WGS84 ellipsoid with pyproj.Geod (no projection distortion).
+    Projected sources are first transformed back to WGS84 longitude/latitude.
+
+In both methods invalid geometries (e.g. self-intersecting polygons) are repaired with
+make_valid before measuring, and the repair is reported in the note.
 """
 from dataclasses import dataclass
 from functools import lru_cache
 
 import numpy as np
 import shapely
-from pyproj import CRS, Transformer
+from pyproj import CRS, Geod, Transformer
 from shapely.geometry.base import BaseGeometry
+from shapely.geometry.polygon import orient
 
 AREA_TYPES = {"Polygon", "MultiPolygon"}
 LENGTH_TYPES = {"LineString", "MultiLineString", "LinearRing"}
 NO_MEASURE_TYPES = {"Point", "MultiPoint"}
 
+METHODS = ("projected", "geodesic")
 UTM_MIN_LAT, UTM_MAX_LAT = -80.0, 84.0  # latitude band where UTM is defined
+
+WGS84 = CRS.from_epsg(4326)
+GEOD = Geod(ellps="WGS84")
 
 
 @dataclass
@@ -85,7 +96,23 @@ def _project(geom: BaseGeometry, source: CRS, target: CRS) -> BaseGeometry:
     )
 
 
-def measure_geometry(geom: BaseGeometry | None, source_crs: CRS) -> Measurement:
+def _geodesic_value(geom: BaseGeometry, kind: str) -> float:
+    """Ellipsoidal area (m2) or length (m) of lon/lat geometry, recursing into collections."""
+    if hasattr(geom, "geoms") and geom.geom_type not in AREA_TYPES | LENGTH_TYPES:
+        return sum(_geodesic_value(part, kind) for part in geom.geoms)
+    if kind == "area" and geom.geom_type in AREA_TYPES:
+        polygons = geom.geoms if geom.geom_type == "MultiPolygon" else [geom]
+        return sum(abs(GEOD.geometry_area_perimeter(orient(p))[0]) for p in polygons)
+    if kind == "length" and geom.geom_type in LENGTH_TYPES:
+        return GEOD.geometry_length(geom)
+    return 0.0
+
+
+def measure_geometry(
+    geom: BaseGeometry | None, source_crs: CRS, method: str = "projected"
+) -> Measurement:
+    if method not in METHODS:
+        raise ValueError(f"Unknown measurement method: {method}")
     if geom is None or geom.is_empty:
         return Measurement(note="Empty or missing geometry.")
 
@@ -104,15 +131,19 @@ def measure_geometry(geom: BaseGeometry | None, source_crs: CRS) -> Measurement:
         geom = shapely.make_valid(geom)
         notes.append("Invalid geometry repaired with make_valid before measuring.")
 
-    if source_crs.is_geographic:
+    if method == "geodesic":
+        if source_crs.to_epsg() != 4326:
+            geom = _project(geom, source_crs, WGS84)
+        raw, unit, label = _geodesic_value(geom, kind), "m", "WGS84 ellipsoid (geodesic)"
+    elif source_crs.is_geographic:
         geom = _unwrap_antimeridian(geom)
         target, label = _metric_crs_for(geom)
-        projected = _project(geom, source_crs, target)
+        raw = (lambda g: g.area if kind == "area" else g.length)(_project(geom, source_crs, target))
         unit = "m"
     else:
-        target, label, projected, unit = source_crs, source_crs.to_string(), geom, _unit(source_crs)
+        label, unit = source_crs.to_string(), _unit(source_crs)
+        raw = geom.area if kind == "area" else geom.length
 
-    raw = projected.area if kind == "area" else projected.length
     return Measurement(
         type=kind,
         value=float(raw),

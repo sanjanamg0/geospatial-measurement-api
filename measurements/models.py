@@ -1,5 +1,6 @@
 import uuid
 
+from django.conf import settings
 from django.db import models
 
 
@@ -10,9 +11,14 @@ class UploadedFile(models.Model):
         COMPLETED = "COMPLETED"
         FAILED = "FAILED"
 
+    class Method(models.TextChoices):
+        PROJECTED = "projected"
+        GEODESIC = "geodesic"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     filename = models.CharField(max_length=255)
     file_type = models.CharField(max_length=16)  # "shapefile" | "kml"
+    method = models.CharField(max_length=16, choices=Method.choices, default=Method.PROJECTED)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
     crs = models.CharField(max_length=64, null=True, blank=True)
     feature_count = models.PositiveIntegerField(default=0)
@@ -21,6 +27,10 @@ class UploadedFile(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+
+    def upload_path(self):
+        suffix = ".zip" if self.file_type == "shapefile" else ".kml"
+        return settings.UPLOADS_DIR / f"{self.id.hex}{suffix}"
 
 
 class Feature(models.Model):

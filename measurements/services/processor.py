@@ -22,7 +22,7 @@ def _crs_label(crs) -> str:
     return f"EPSG:{epsg}" if epsg else crs.to_string()
 
 
-def _build_features(gdf: gpd.GeoDataFrame, file_id) -> list[Feature]:
+def _build_features(gdf: gpd.GeoDataFrame, file_id, method: str) -> list[Feature]:
     crs = gdf.crs
     label = _crs_label(crs)
     props = json.loads(
@@ -30,7 +30,7 @@ def _build_features(gdf: gpd.GeoDataFrame, file_id) -> list[Feature]:
     )
     features = []
     for i, geom in enumerate(gdf.geometry):
-        m = measure_geometry(geom, crs)
+        m = measure_geometry(geom, crs, method)
         features.append(
             Feature(
                 file_id=file_id,
@@ -55,7 +55,7 @@ def process_file(record: UploadedFile, path: Path) -> UploadedFile:
     record.save(update_fields=["status"])
     try:
         gdf = read_geofile(path, record.file_type)
-        features = _build_features(gdf, record.id)
+        features = _build_features(gdf, record.id, record.method)
         with transaction.atomic():
             Feature.objects.bulk_create(features, batch_size=500)
         record.crs = _crs_label(gdf.crs)

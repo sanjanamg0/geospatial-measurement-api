@@ -12,10 +12,19 @@ INSTALLED_APPS = [
     "django.contrib.auth",
     "django.contrib.staticfiles",
     "rest_framework",
+    "drf_spectacular",
     "measurements",
 ]
 
 MIDDLEWARE = ["django.middleware.common.CommonMiddleware"]
+
+TEMPLATES = [
+    {
+        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "APP_DIRS": True,
+        "OPTIONS": {"context_processors": []},
+    }
+]
 
 ROOT_URLCONF = "geoproject.urls"
 WSGI_APPLICATION = "geoproject.wsgi.application"
@@ -37,6 +46,10 @@ STATIC_URL = "static/"
 
 MAX_UPLOAD_MB = int(os.environ.get("GEO_MAX_UPLOAD_MB", "50"))
 
+# Background processing: upload returns 202 immediately and a worker thread processes the file.
+ASYNC_PROCESSING = os.environ.get("GEO_ASYNC", "0") == "1"
+ASYNC_WORKERS = int(os.environ.get("GEO_ASYNC_WORKERS", "2"))
+
 REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
     "DEFAULT_PARSER_CLASSES": [
@@ -44,4 +57,14 @@ REST_FRAMEWORK = {
         "rest_framework.parsers.JSONParser",
     ],
     "UNAUTHENTICATED_USER": None,
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+}
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": "Geospatial File Measurement API",
+    "DESCRIPTION": (
+        "Upload a zipped Shapefile or KML and get per-feature area and length in metres."
+    ),
+    "VERSION": "1.0.0",
+    "SERVE_INCLUDE_SCHEMA": False,
 }

@@ -25,12 +25,19 @@ pytest
 ruff check .
 ```
 
-Configuration (environment variables): `GEO_DATA_DIR` (DB and uploads, default `./data`), `GEO_MAX_UPLOAD_MB` (default 50), `DJANGO_SECRET_KEY`, `DJANGO_DEBUG`.
+Configuration (environment variables): `GEO_DATA_DIR` (DB and uploads, default `./data`), `GEO_MAX_UPLOAD_MB` (default 50), `GEO_ASYNC` (set to `1` for background processing), `GEO_ASYNC_WORKERS` (default 2), `DJANGO_SECRET_KEY`, `DJANGO_DEBUG`.
+
+**Interactive API docs (Swagger UI):** http://localhost:8000/api/docs/ (OpenAPI schema at `/api/schema/`).
 
 ## API
 
 ### `POST /api/files/`
-Multipart upload, field name `file`. Accepts `.kml` or `.zip` containing one or more `.shp` sets. The file is processed synchronously; the response already carries the final status.
+Multipart upload. Fields:
+
+- `file` (required): a `.kml`, or a `.zip` containing one or more Shapefiles.
+- `method` (optional): `projected` (default) or `geodesic`, see [Measurement methods](#measurement-methods).
+
+By default the file is processed synchronously (`201`; the response already carries the final status). With `GEO_ASYNC=1` it returns `202` with `status: "PENDING"` and a background worker processes it; poll `GET /api/files/{id}/` until `status` is `COMPLETED` or `FAILED`.
 
 ```bash
 curl -F file=@samples/survey_sample.kml http://localhost:8000/api/files/
@@ -42,6 +49,7 @@ curl -F file=@samples/survey_sample.kml http://localhost:8000/api/files/
   "feature_count": 3,
   "crs": "EPSG:4326",
   "status": "COMPLETED",
+  "method": "projected",
   "error": null,
   "created_at": "2026-10-07T10:27:12.147231Z"
 }
@@ -55,6 +63,9 @@ curl -F file=@samples/survey_sample.kml http://localhost:8000/api/files/
 ### `GET /api/files/{id}/`
 Same shape as the upload response. `404` for unknown ids.
 
+### `DELETE /api/files/{id}/`
+Deletes the record, its features and the stored upload. `204` on success, `404` if unknown.
+
 ### `GET /api/files/{id}/measurements/?limit=100&offset=0`
 `409` unless the file is `COMPLETED`. Paginated: `limit` defaults to 100 (max 1000); the response includes `count` (total), `next` and `previous` links.
 
@@ -65,6 +76,10 @@ Same shape as the upload response. `404` for unknown ids.
   "count": 3,
   "next": null,
   "previous": null,
+  "summary": {
+    "by_geometry_type": {"Polygon": 1, "LineString": 1, "Point": 1},
+    "totals": {"area": {"m²": 11050.42}, "length": {"m": 1105.7}}
+  },
   "features": [
     {
       "index": 0,
@@ -87,7 +102,34 @@ Same shape as the upload response. `404` for unknown ids.
 }
 ```
 
-`measurement.type` is `area`, `length`, or `null` (points and unsupported types, with an explanatory `note`). Geometry is returned as GeoJSON in the file's original CRS.
+`measurement.type` is `area`, `length`, or `null` (points and unsupported types, with an explanatory `note`). Geometry is returned as GeoJSON in the file's original CRS. `summary` covers the whole file (not just the current page): counts per geometry type and totals of area/length per unit.
+
+### `GET /api/files/{id}/export/?as=geojson|csv`
+Downloads every feature with its measurement. GeoJSON (default) keeps the source CRS in a top-level `crs` member; CSV has one row per feature with the geometry as WKT. `409` unless the file is `COMPLETED`; `400` for an unknown `as`.
+
+```bash
+curl -OJ "http://localhost:8000/api/files/<id>/export/?as=csv"
+```
+
+## Measurement methods
+
+| `method` | How | Use when |
+| --- | --- | --- |
+| `projected` (default) | Reproject each feature to its UTM zone (polar: equal-area CRS), then measure in metres | Surveying-scale work; matches GIS tools working in a projected CRS |
+| `geodesic` | Measure directly on the WGS84 ellipsoid with `pyproj.Geod` | You want no projection distortion at all |
+
+On the sample polygon in `samples/qgis_check.kml` the two methods differ by about 0.12% in area and 0.06% in length. Each feature records the CRS or ellipsoid it was measured in (`measured_in_crs`).
+
+## Background processing
+
+Set `GEO_ASYNC=1` to return `202` immediately and process in an in-process worker pool (`GEO_ASYNC_WORKERS`, default 2). It needs no broker, which keeps setup trivial. Limitation: queued jobs are lost if the server restarts and it does not scale past one process; for that, replace `measurements/jobs.py::submit` with a Celery/RQ task that calls `jobs.run`.
+
+## Maintenance
+
+```bash
+python manage.py cleanup_uploads --days 30            # delete files older than 30 days
+python manage.py cleanup_uploads --days 30 --dry-run  # only report
+```
 
 ## Architecture
 
@@ -96,7 +138,9 @@ geoproject/            Django project (settings, urls)
 measurements/
   models.py            UploadedFile, Feature
   serializers.py       upload validation, response shapes
-  views.py             FileViewSet (create, retrieve, measurements action)
+  views.py             FileViewSet (create, retrieve, delete, measurements, export)
+  jobs.py              optional background worker (GEO_ASYNC=1)
+  management/commands/ cleanup_uploads retention command
   services/
     reader.py          zip/KML -> GeoDataFrame (framework independent)
     measure.py         CRS selection + area/length (framework independent)
@@ -105,7 +149,7 @@ tests/
 samples/               sample KML and Shapefile files for testing
 ```
 
-**File-processing flow:** upload validated -> saved under `data/uploads/<id>` -> status `PROCESSING` -> `reader` parses it -> every feature is measured -> features bulk-inserted -> status `COMPLETED` (or `FAILED` with a message).
+**File-processing flow:** upload validated -> saved under `data/uploads/<id>` -> (inline, or via the background worker) status `PROCESSING` -> `reader` parses it -> every feature is measured -> features bulk-inserted -> status `COMPLETED` (or `FAILED` with a message).
 
 **Measurement flow:** per feature, `measure_geometry` picks the measurement kind from the geometry type (Polygon/MultiPolygon -> area, LineString/MultiLineString -> length, Point and anything else -> no measurement plus a note), reprojects if needed, and measures.
 
@@ -151,7 +195,9 @@ All test cases assert agreement within 0.5%.
 - Automatic cleanup of extracted temporary folders after processing.
 - Structured logging with feature count and execution duration.
 - GitHub Actions CI workflow running tests and linter on Python 3.12.
-- 40 automated unit and integration tests passing.
+- Swagger UI / OpenAPI schema, geodesic measurement mode, GeoJSON and CSV export, whole-file summary, delete endpoint and retention command.
+- Optional background processing (`GEO_ASYNC=1`) with `202` + polling.
+- 56 automated unit and integration tests passing.
 
 ## Learnings
 
@@ -164,9 +210,6 @@ All test cases assert agreement within 0.5%.
 
 ## Known Limitations and Future Scope
 
-- Background task queue (Celery/Redis) for very large file processing with progress polling.
-- Export endpoints for measurements in GeoJSON and CSV formats.
+- Celery/Redis task queue and progress reporting for very large files (the in-process worker is single-process and non-durable).
 - User authentication and per-tenant upload isolation.
-- Optional ellipsoidal geodesic measurement mode (`pyproj.Geod`) selectable via query parameter.
-- OpenAPI schema and interactive Swagger UI integration (`drf-spectacular`).
 - PostgreSQL/PostGIS integration for spatial indexing and bounding-box queries.
