@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>Sample Survey</name>
+    <Placemark>
+      <name>Agricultural Field 1</name>
+      <description>Polygon parcel in Bangalore, India</description>
+      <Polygon>
+        <outerBoundaryIs>
+          <LinearRing>
+            <coordinates>
+              77.5946,12.9716,0
+              77.5956,12.9716,0
+              77.5956,12.9726,0
+              77.5946,12.9726,0
+              77.5946,12.9716,0
+            </coordinates>
+          </LinearRing>
+        </outerBoundaryIs>
+      </Polygon>
+    </Placemark>
+    <Placemark>
+      <name>Access Road</name>
+      <description>Survey line segment</description>
+      <LineString>
+        <coordinates>
+          77.5946,12.9716,0
+          77.5946,12.9750,0
+        </coordinates>
+      </LineString>
+    </Placemark>
+    <Placemark>
+      <name>Borewell Marker</name>
+      <description>Point landmark (no measurement expected)</description>
+      <Point>
+        <coordinates>77.5950,12.9720,0</coordinates>
+      </Point>
+    </Placemark>
+  </Document>
+</kml>
